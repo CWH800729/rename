@@ -61,7 +61,7 @@ const catalogStorageKey='photo-renamer.catalog.v1';
 function normalizeOptions(values){if(!Array.isArray(values))throw Error('清單格式不正確');const seen=new Set();return values.map(v=>{if(typeof v!=='string')throw Error('清單必須為文字');return v.trim().normalize('NFC')}).filter(v=>{if(!v)return false;const k=v.toLocaleLowerCase();if(seen.has(k))return false;seen.add(k);return true})}
 function normalizeCatalog(data){return {vendors:normalizeOptions(data.vendors),contents:normalizeOptions(data.contents)}}
 // 可將部署後的 /exec 網址填在此處，讓分發出去的 HTML 預設使用同一份共用清單。
-const DEFAULT_CATALOG_API_URL = '';
+const DEFAULT_CATALOG_API_URL = 'https://script.google.com/macros/s/AKfycbxpfr9BWOylO6SEUhbMg1ZT8fVD0KAXrL0eIgMhBwz_OUR8Sa_xEBJ1X_8ZYie33cPh/exec';
 const apiUrlKey='photo-renamer.catalog-api.v1';
 let catalogApiUrl=DEFAULT_CATALOG_API_URL,catalogRevision=null;
 try{catalogApiUrl=localStorage.getItem(apiUrlKey)||DEFAULT_CATALOG_API_URL}catch(_){}
