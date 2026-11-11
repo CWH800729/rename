@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拆分檔名並更名</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f5f3;color:#20372f;font:16px/1.6 system-ui,"Microsoft JhengHei",sans-serif}
+header{background:#174d43;color:white;padding:22px max(18px,calc((100vw - 1080px)/2))}
+header a{color:#deeee7}h1{margin:8px 0 0;font-size:1.65rem}h2{margin:0 0 12px;font-size:1.12rem}
+main{max-width:1116px;margin:auto;padding:20px 18px 48px}.panel{background:white;border:1px solid #d8e4dc;border-radius:12px;padding:18px}
+.toolbar,.fields{display:flex;align-items:end;gap:12px;flex-wrap:wrap}.toolbar p{margin:0;overflow-wrap:anywhere}
+.layout{display:grid;grid-template-columns:minmax(240px,1fr) minmax(0,1.55fr);gap:16px}
+label{display:grid;gap:4px}input,button{font:inherit;padding:7px 10px;border:1px solid #b8ccc0;border-radius:7px;background:white;color:inherit}
+button{cursor:pointer}button:disabled{cursor:default;opacity:.5}.primary{background:#17604e;color:white;border-color:#17604e}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #2a8269;outline-offset:2px}
+#files{margin-top:10px;max-height:480px;overflow:auto;display:grid;gap:5px}#files button{text-align:left;overflow-wrap:anywhere}
+#files button[aria-pressed=true]{background:#e5f3eb;border-color:#2b8267}small{display:block;color:#526b60}
+.fields label{flex:1 1 125px;min-width:0}.fields input{min-width:0;width:100%}
+.path,#preview,#status{overflow-wrap:anywhere}#preview{font-weight:650}
+@media(max-width:650px){.layout{grid-template-columns:1fr}#files{max-height:220px}}
+</style>
+</head>
+<body>
+<header><a href="index.html">← 返回照片批次更名</a><h1>拆分檔名並更名</h1></header>
+<main>
+  <div class="toolbar panel">
+    <button id="choose" class="primary" type="button">選擇資料夾</button>
+    <label>分隔符號 <input id="separators" value="-_－＿" aria-describedby="separatorHint"></label>
+    <p id="separatorHint"><small>每個字元都是一種分隔符號。原有符號與副檔名會保留。</small></p>
+  </div>
+  <p id="status" role="status" aria-live="polite">請選擇資料夾並授權寫入。</p>
+  <div class="layout">
+    <section class="panel" aria-labelledby="fileTitle">
+      <h2 id="fileTitle">檔案清單</h2>
+      <label>搜尋檔名或路徑 <input id="search" type="search"></label>
+      <div id="files"></div>
+    </section>
+    <section class="panel" aria-labelledby="editorTitle">
+      <h2 id="editorTitle">編輯檔名欄位</h2>
+      <p id="path" class="path">請從清單選擇檔案。</p>
+      <form id="editor" hidden>
+        <div id="fields" class="fields"></div>
+        <p>新檔名 <output id="preview"></output></p>
+        <button id="rename" class="primary" type="submit">確認重新命名</button>
+      </form>
+    </section>
+  </div>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const status = message => { $('status').textContent = message; };
+let entries = [];
+let selected;
+let originalName;
+let busy = false;
+
+async function readFolder(folder, path = folder.name) {
+  const files = [];
+  for await (const handle of folder.values()) {
+    if (handle.kind === 'directory') {
+      files.push(...await readFolder(handle, path + '/' + handle.name));
+    } else if (handle.kind === 'file') {
+      files.push({ folder, path, handle });
+    }
+  }
+  return files;
+}
+
+function splitName(name, separators) {
+  const dot = name.lastIndexOf('.');
+  const extension = dot > 0 ? name.slice(dot) : '';
+  const stem = extension ? name.slice(0, dot) : name;
+  const parts = [''];
+  const marks = [];
+  for (const character of stem) {
+    if (separators.includes(character)) {
+      marks.push(character);
+      parts.push('');
+    } else {
+      parts[parts.length - 1] += character;
+    }
+  }
+  return { parts, marks, extension };
+}
+
+function renderFiles() {
+  const query = $('search').value.trim().toLocaleLowerCase();
+  $('files').replaceChildren();
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) {
+    if (!(entry.path + '/' + entry.handle.name).toLocaleLowerCase().includes(query)) continue;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.disabled = busy;
+    button.setAttribute('aria-pressed', String(entry === selected));
+    button.textContent = entry.handle.name;
+    const path = document.createElement('small');
+    path.textContent = entry.path;
+    button.append(path);
+    button.onclick = () => {
+      selected = entry;
+      renderEditor();
+      renderFiles();
+    };
+    fragment.append(button);
+  }
+  $('files').append(fragment);
+  if (!$('files').childElementCount) $('files').textContent = entries.length ? '沒有符合的檔案。' : '尚未讀取檔案。';
+}
+
+function renderEditor() {
+  $('editor').hidden = !selected;
+  $('fields').replaceChildren();
+  $('path').textContent = selected ? selected.path + '/' + selected.handle.name : '請從清單選擇檔案。';
+  if (!selected) return;
+  originalName = splitName(selected.handle.name, $('separators').value);
+  originalName.parts.forEach((part, index) => {
+    const label = document.createElement('label');
+    label.textContent = '欄位 ' + (index + 1);
+    const input = document.createElement('input');
+    input.value = part;
+    label.append(input);
+    $('fields').append(label);
+  });
+  updatePreview();
+}
+
+function updatePreview() {
+  const inputs = [...$('fields').querySelectorAll('input')];
+  const stem = inputs.map((input, index) => input.value + (originalName.marks[index] || '')).join('');
+  const name = stem + originalName.extension;
+  $('preview').textContent = name;
+  $('rename').disabled = busy || !stem.trim() || name === selected.handle.name;
+  return name;
+}
+
+async function sameBytes(first, second) {
+  if (first.size !== second.size) return false;
+  const chunk = 4 * 1024 * 1024;
+  for (let offset = 0; offset < first.size; offset += chunk) {
+    const a = new Uint8Array(await first.slice(offset, offset + chunk).arrayBuffer());
+    const b = new Uint8Array(await second.slice(offset, offset + chunk).arrayBuffer());
+    if (a.some((value, index) => value !== b[index])) return false;
+  }
+  return true;
+}
+
+async function renameFile(entry, name) {
+  if (/[<>:"/\\|?*\x00-\x1f]/u.test(name) || /[. ]$/u.test(name) ||
+      /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]) *(?:\.|$)/iu.test(name)) {
+    throw Error('新檔名含 Windows 保留名稱、字元或結尾空格。');
+  }
+  const source = await entry.folder.getFileHandle(entry.handle.name);
+  if (!(await source.isSameEntry(entry.handle))) throw Error('來源已變動，請重新選擇資料夾。');
+  const file = await source.getFile();
+  for await (const sibling of entry.folder.keys()) {
+    if (sibling.toLowerCase() === name.toLowerCase()) throw Error('原資料夾已有同名項目，請改用其他名稱。');
+  }
+  const target = await entry.folder.getFileHandle(name, { create: true });
+  const stream = await target.createWritable();
+  try {
+    await stream.write(file);
+    await stream.close();
+  } catch (error) {
+    await stream.abort().catch(() => {});
+    throw error;
+  }
+  if (!(await sameBytes(file, await target.getFile()))) throw Error('新檔內容驗證失敗，原檔已保留。');
+  const current = await entry.folder.getFileHandle(source.name);
+  if (!(await source.isSameEntry(current)) || !(await sameBytes(file, await current.getFile()))) {
+    throw Error('來源在寫入期間變動，新檔已建立，原檔未刪除。');
+  }
+  try {
+    await entry.folder.removeEntry(source.name);
+  } catch (error) {
+    throw Error('新檔已建立，原檔移除失敗。' + error.message);
+  }
+  entry.handle = target;
+}
+
+function setBusy(value) {
+  busy = value;
+  for (const id of ['choose', 'search', 'separators']) $(id).disabled = value;
+  for (const input of $('fields').querySelectorAll('input')) input.disabled = value;
+  if (selected) updatePreview();
+  renderFiles();
+}
+
+$('choose').onclick = async () => {
+  if (!window.isSecureContext || !window.showDirectoryPicker) {
+    status('這個瀏覽器無法授權寫入，請使用桌面版 Chrome 或 Edge。');
+    return;
+  }
+  setBusy(true);
+  try {
+    const folder = await window.showDirectoryPicker({ mode: 'readwrite' });
+    status('正在讀取資料夾…');
+    entries = await readFolder(folder);
+    entries.sort((a, b) => (a.path + '/' + a.handle.name).localeCompare(b.path + '/' + b.handle.name, 'zh-Hant', { numeric: true }));
+    selected = undefined;
+    $('search').value = '';
+    renderEditor();
+    status(`「${folder.name}」共 ${entries.length} 個檔案。`);
+  } catch (error) {
+    if (error.name !== 'AbortError') status('讀取失敗。' + error.message);
+  } finally {
+    setBusy(false);
+  }
+};
+$('search').oninput = renderFiles;
+$('separators').onchange = renderEditor;
+$('fields').oninput = updatePreview;
+$('editor').onsubmit = async event => {
+  event.preventDefault();
+  if (busy || !selected || $('rename').disabled) return;
+  const name = updatePreview();
+  if (!window.confirm(`將「${selected.handle.name}」改成「${name}」？`)) return;
+  setBusy(true);
+  try {
+    await renameFile(selected, name);
+    renderEditor();
+    status(`已更名為「${name}」。`);
+  } catch (error) {
+    status('更名未完成。' + error.message);
+  } finally {
+    setBusy(false);
+  }
+};
+renderFiles();
+</script>
+</body>
+</html>
