@@ -16,6 +16,12 @@ button{cursor:pointer}button:disabled{cursor:default;opacity:.5}.primary{backgro
 button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #2a8269;outline-offset:2px}
 #files{margin-top:10px;max-height:480px;overflow:auto;display:grid;gap:5px}#files button{text-align:left;overflow-wrap:anywhere}
 #files button[aria-pressed=true]{background:#e5f3eb;border-color:#2b8267}small{display:block;color:#526b60}
+.file-row{display:grid;grid-template-columns:68px minmax(0,1fr);align-items:center;gap:10px}
+.file-thumb,.photo-preview{display:grid;place-items:center;background:#edf2ee;border-radius:7px;overflow:hidden;color:#526b60}
+.file-thumb{height:56px}.file-thumb img{width:100%;height:56px;object-fit:cover}
+.photo-preview{margin:0 0 16px;min-height:104px;padding:8px}
+.photo-preview img{display:block;max-width:100%;max-height:340px;object-fit:contain}
+.file-thumb small,.photo-preview small{text-align:center;padding:3px}
 .fields label{flex:1 1 125px;min-width:0}.fields input{min-width:0;width:100%}
 .path,#preview,#status{overflow-wrap:anywhere}#preview{font-weight:650}
 @media(max-width:650px){.layout{grid-template-columns:1fr}#files{max-height:220px}}
@@ -40,6 +46,7 @@ button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #2a82
       <h2 id="editorTitle">編輯檔名欄位</h2>
       <p id="path" class="path">請從清單選擇檔案。</p>
       <form id="editor" hidden>
+        <div id="photoPreview" class="photo-preview" aria-label="選取照片預覽"></div>
         <div id="fields" class="fields"></div>
         <p>新檔名 <output id="preview"></output></p>
         <button id="rename" class="primary" type="submit">確認重新命名</button>
@@ -55,6 +62,52 @@ let entries = [];
 let selected;
 let originalName;
 let busy = false;
+const photoExtension = /\.(?:avif|bmp|gif|heic|heif|ico|jpe?g|jfif|png|svg|tiff?|webp)$/i;
+const previewUrls = new Map();
+const thumbnailEntries = new WeakMap();
+const thumbnailObserver = new IntersectionObserver(changes => {
+  for (const change of changes) {
+    if (!change.isIntersecting) continue;
+    thumbnailObserver.unobserve(change.target);
+    showPhoto(change.target, thumbnailEntries.get(change.target), false);
+  }
+}, { root: $('files'), rootMargin: '80px' });
+
+function releasePreview(entry) {
+  previewUrls.get(entry)?.then(url => {
+    if (url) URL.revokeObjectURL(url);
+  });
+  previewUrls.delete(entry);
+}
+
+async function showPhoto(container, entry, fullSize) {
+  const placeholder = document.createElement('small');
+  const isPhoto = photoExtension.test(entry.handle.name);
+  placeholder.textContent = isPhoto ? '載入照片…' : '檔案';
+  container.replaceChildren(placeholder);
+  if (!isPhoto) return;
+
+  if (!previewUrls.has(entry)) {
+    previewUrls.set(entry, entry.handle.getFile()
+      .then(file => URL.createObjectURL(file))
+      .catch(() => null));
+  }
+  const request = previewUrls.get(entry);
+  const url = await request;
+  if (!container.contains(placeholder) || previewUrls.get(entry) !== request) return;
+  if (!url) {
+    placeholder.textContent = '無法預覽';
+    return;
+  }
+  const image = document.createElement('img');
+  image.alt = fullSize ? entry.handle.name : '';
+  image.decoding = 'async';
+  image.onload = () => {
+    if (container.contains(placeholder)) container.replaceChildren(image);
+  };
+  image.onerror = () => { placeholder.textContent = '無法預覽'; };
+  image.src = url;
+}
 
 async function readFolder(folder, path = folder.name) {
   const files = [];
@@ -87,18 +140,27 @@ function splitName(name, separators) {
 
 function renderFiles() {
   const query = $('search').value.trim().toLocaleLowerCase();
+  thumbnailObserver.disconnect();
   $('files').replaceChildren();
   const fragment = document.createDocumentFragment();
   for (const entry of entries) {
     if (!(entry.path + '/' + entry.handle.name).toLocaleLowerCase().includes(query)) continue;
     const button = document.createElement('button');
+    button.className = 'file-row';
     button.type = 'button';
     button.disabled = busy;
     button.setAttribute('aria-pressed', String(entry === selected));
-    button.textContent = entry.handle.name;
+    const thumbnail = document.createElement('span');
+    thumbnail.className = 'file-thumb';
+    thumbnail.setAttribute('aria-hidden', 'true');
+    const details = document.createElement('span');
+    details.textContent = entry.handle.name;
     const path = document.createElement('small');
     path.textContent = entry.path;
-    button.append(path);
+    details.append(path);
+    button.append(thumbnail, details);
+    thumbnailEntries.set(thumbnail, entry);
+    thumbnailObserver.observe(thumbnail);
     button.onclick = () => {
       selected = entry;
       renderEditor();
@@ -113,8 +175,10 @@ function renderFiles() {
 function renderEditor() {
   $('editor').hidden = !selected;
   $('fields').replaceChildren();
+  $('photoPreview').replaceChildren();
   $('path').textContent = selected ? selected.path + '/' + selected.handle.name : '請從清單選擇檔案。';
   if (!selected) return;
+  showPhoto($('photoPreview'), selected, true);
   originalName = splitName(selected.handle.name, $('separators').value);
   originalName.parts.forEach((part, index) => {
     const label = document.createElement('label');
@@ -197,7 +261,9 @@ $('choose').onclick = async () => {
   try {
     const folder = await window.showDirectoryPicker({ mode: 'readwrite' });
     status('正在讀取資料夾…');
-    entries = await readFolder(folder);
+    const files = await readFolder(folder);
+    for (const entry of previewUrls.keys()) releasePreview(entry);
+    entries = files;
     entries.sort((a, b) => (a.path + '/' + a.handle.name).localeCompare(b.path + '/' + b.handle.name, 'zh-Hant', { numeric: true }));
     selected = undefined;
     $('search').value = '';
@@ -220,6 +286,7 @@ $('editor').onsubmit = async event => {
   setBusy(true);
   try {
     await renameFile(selected, name);
+    releasePreview(selected);
     renderEditor();
     status(`已更名為「${name}」。`);
   } catch (error) {
